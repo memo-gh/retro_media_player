@@ -1,0 +1,235 @@
+#!/usr/bin/env python3
+"""Focus the Hyprland window (native app, web-app, or browser tab) currently playing media."""
+
+import json
+import re
+import subprocess
+import sys
+from urllib.parse import urlparse
+
+
+def clean(value, limit=240):
+    if not isinstance(value, str):
+        return ""
+    return re.sub(r"\s+", " ", value).strip()[:limit]
+
+
+def extract_host(url):
+    raw = clean(url, 512).lower()
+    if not raw:
+        return ""
+    try:
+        parsed = urlparse(raw)
+        host = (parsed.hostname or "").lower()
+        return re.sub(r"^www\.", "", host)
+    except ValueError:
+        return ""
+
+
+def query_dbus_info(dbus_name):
+    pid = 0
+    url = ""
+    if not dbus_name:
+        return pid, url
+    try:
+        import dbus
+        bus = dbus.SessionBus()
+        daemon = bus.get_object("org.freedesktop.DBus", "/org/freedesktop/DBus")
+        try:
+            pid = int(daemon.GetConnectionUnixProcessID(dbus_name, dbus_interface="org.freedesktop.DBus"))
+        except Exception:
+            pid = 0
+        try:
+            player_obj = bus.get_object(dbus_name, "/org/mpris/MediaPlayer2")
+            props = dbus.Interface(player_obj, "org.freedesktop.DBus.Properties")
+            metadata = props.Get("org.mpris.MediaPlayer2.Player", "Metadata")
+            if isinstance(metadata, dict) and "xesam:url" in metadata:
+                url = str(metadata["xesam:url"])
+        except Exception:
+            pass
+    except Exception:
+        pass
+    return pid, url
+
+
+def raise_via_dbus(dbus_name):
+    if not dbus_name:
+        return False
+    try:
+        import dbus
+        bus = dbus.SessionBus()
+        player_obj = bus.get_object(dbus_name, "/org/mpris/MediaPlayer2")
+        root_iface = dbus.Interface(player_obj, "org.mpris.MediaPlayer2")
+        root_iface.Raise()
+        return True
+    except Exception:
+        return False
+
+
+def focus_address(address):
+    if not address or not re.match(r"^0x[0-9a-fA-F]+$", address):
+        return False
+    res = subprocess.run(
+        ["hyprctl", "dispatch", f'hl.dsp.focus({{ window = "address:{address}" }})'],
+        stdout=subprocess.DEVNULL,
+        stderr=subprocess.DEVNULL,
+        check=False,
+    )
+    if res.returncode == 0:
+        return True
+    res2 = subprocess.run(
+        ["hyprctl", "dispatch", "focuswindow", f"address:{address}"],
+        stdout=subprocess.DEVNULL,
+        stderr=subprocess.DEVNULL,
+        check=False,
+    )
+    return res2.returncode == 0
+
+
+def main():
+    args = sys.argv[1:]
+    dbus_name = clean(args[0] if len(args) > 0 else "", 160)
+    desktop_entry = clean(args[1] if len(args) > 1 else "", 120)
+    identity = clean(args[2] if len(args) > 2 else "", 120)
+    track_title = clean(args[3] if len(args) > 3 else "", 200)
+    track_artist = clean(args[4] if len(args) > 4 else "", 160)
+    track_url = clean(args[5] if len(args) > 5 else "", 512)
+
+    try:
+        proc = subprocess.run(
+            ["hyprctl", "clients", "-j"],
+            capture_output=True,
+            text=True,
+            timeout=2,
+            check=False,
+        )
+        clients = json.loads(proc.stdout or "[]")
+    except Exception:
+        clients = []
+
+    if not isinstance(clients, list):
+        clients = []
+
+    if "radio_atlas" in dbus_name.lower() or "radio-atlas" in dbus_name.lower() or identity.lower() == "radio atlas":
+        for c in clients:
+            if not isinstance(c, dict) or not c.get("mapped"):
+                continue
+            init_cls = clean(c.get("initialClass") or "", 160).lower()
+            init_title = clean(c.get("initialTitle") or "", 240).lower()
+            w_title = clean(c.get("title") or "", 240).lower()
+            if (init_cls == "org.quickshell" and init_title == "radio atlas") or w_title == "radio atlas":
+                focus_id = c.get("focusHistoryID")
+                addr = str(c.get("address") or "")
+                if isinstance(focus_id, int) and focus_id > 0 and addr and focus_address(addr):
+                    return 0
+                break
+        subprocess.run(
+            ["omarchy-shell", "shell", "toggle", "akshar.radio-atlas"],
+            stdout=subprocess.DEVNULL,
+            stderr=subprocess.DEVNULL,
+            check=False,
+        )
+        return 0
+
+    mpris_pid, dbus_url = query_dbus_info(dbus_name)
+    if not track_url and dbus_url:
+        track_url = dbus_url
+
+    title_tok = track_title.lower()
+    artist_tok = track_artist.lower()
+    desktop_tok = re.sub(r"\.desktop$", "", desktop_entry.lower())
+    identity_tok = identity.lower()
+    dbus_tok = re.sub(r"\.instance[0-9_]+$", "", re.sub(r"^org\.mpris\.mediaplayer2\.", "", dbus_name.lower()))
+    url_host = extract_host(track_url)
+
+    browser_tokens = ("chromium", "chrome", "google-chrome", "brave", "firefox", "vivaldi", "opera", "msedge", "zen")
+    is_browser = any(bt in desktop_tok or bt in identity_tok or bt in dbus_tok for bt in browser_tokens)
+
+    web_media_keywords = (
+        "youtube", "spotify", "soundcloud", "tidal", "deezer",
+        "bandcamp", "music.apple", "applemusic", "pandora",
+        "plex", "jellyfin", "twitch", "netflix", "mixcloud",
+    )
+
+    best_address = ""
+    best_score = 0
+    best_focus_id = 999999
+
+    for c in clients:
+        if not isinstance(c, dict):
+            continue
+        addr = str(c.get("address") or "")
+        if not addr:
+            continue
+
+        cls = clean(c.get("class") or "", 160).lower()
+        init_cls = clean(c.get("initialClass") or "", 160).lower()
+        w_title = clean(c.get("title") or "", 240).lower()
+        init_title = clean(c.get("initialTitle") or "", 240).lower()
+        pid = int(c.get("pid") or 0)
+        focus_id = int(c.get("focusHistoryID") if isinstance(c.get("focusHistoryID"), int) else 999999)
+        is_webapp = bool(re.match(r"^(?:chrome|brave|msedge|vivaldi|opera)-", cls) or re.match(r"^(?:chrome|brave|msedge|vivaldi|opera)-", init_cls))
+
+        score = 0
+
+        if len(title_tok) >= 2 and (title_tok in w_title or title_tok in init_title):
+            score += 1000
+            if is_webapp:
+                score += 150
+
+        if len(url_host) >= 3:
+            base_domain = url_host.split(".")[0]
+            if url_host in cls or url_host in init_cls:
+                score += 900
+            elif is_webapp and len(base_domain) >= 3 and (base_domain in cls or base_domain in init_cls):
+                score += 800
+            elif len(base_domain) >= 3 and (base_domain in w_title or base_domain in init_title):
+                score += 450
+
+        if len(artist_tok) >= 2 and (artist_tok in w_title or artist_tok in init_title):
+            score += 300
+
+        if is_browser and is_webapp:
+            if any(kw in cls or kw in init_cls or kw in w_title for kw in web_media_keywords):
+                score += 500
+
+        if mpris_pid > 0 and pid == mpris_pid:
+            score += 400
+
+        for tok in (desktop_tok, dbus_tok, identity_tok):
+            if len(tok) < 2:
+                continue
+            if cls == tok or init_cls == tok:
+                score += 350
+                break
+            if tok in cls or tok in init_cls or (len(cls) >= 3 and cls in tok):
+                score += 250
+                break
+            if cls == "org.omarchy.agent" and tok in init_title:
+                score += 250
+                break
+
+        if score > best_score or (score > 0 and score == best_score and focus_id < best_focus_id):
+            best_score = score
+            best_focus_id = focus_id
+            best_address = addr
+
+    if best_address and focus_address(best_address):
+        return 0
+
+    if raise_via_dbus(dbus_name):
+        return 0
+
+    fallback_app = desktop_tok or dbus_tok or identity_tok
+    if fallback_app:
+        subprocess.run(
+            ["omarchy-hyprland-focus-app", fallback_app],
+            stdout=subprocess.DEVNULL,
+            stderr=subprocess.DEVNULL,
+            check=False,
+        )
+    return 0
+
+
+if __name__ == "__main__":
+    sys.exit(main())

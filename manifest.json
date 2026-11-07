@@ -1,0 +1,64 @@
+{
+  "schemaVersion": 1,
+  "id": "memo.retro-media",
+  "name": "Retro 90s Media",
+  "version": "1.0.0",
+  "author": "memo",
+  "license": "MIT",
+  "description": "Shows the playing song name with a Pac-Man wrap-around overflow effect and a moving retro 90s LED equalizer next to it. Clicking focuses the playing app or web-app; disappears when nothing is playing.",
+  "kinds": [
+    "bar-widget"
+  ],
+  "entryPoints": {
+    "barWidget": "BarWidget.qml"
+  },
+  "barWidget": {
+    "displayName": "Retro 90s Media",
+    "description": "Song name with Pac-Man overflow effect and retro 90s equalizer",
+    "category": "Media",
+    "aliases": [
+      "retro-media",
+      "equaliser",
+      "equalizer",
+      "pacman",
+      "now-playing"
+    ],
+    "allowMultiple": false,
+    "defaultSection": "centerBegin",
+    "defaults": {
+      "maxLabelWidth": 150,
+      "showArtist": false,
+      "showPacmanChomp": true,
+      "colorMode": "retro90s"
+    },
+    "schema": [
+      {
+        "key": "maxLabelWidth",
+        "type": "integer",
+        "label": "Max song title width before Pac-Man overflow (px)",
+        "min": 60,
+        "max": 360,
+        "step": 10,
+        "defaultValue": 150
+      },
+      {
+        "key": "showArtist",
+        "type": "boolean",
+        "label": "Show artist next to song name",
+        "defaultValue": false
+      },
+      {
+        "key": "showPacmanChomp",
+        "type": "boolean",
+        "label": "Show chomping Pac-Man in overflow wrap-around",
+        "defaultValue": true
+      },
+      {
+        "key": "colorMode",
+        "type": "string",
+        "label": "Equalizer color mode (retro90s or theme)",
+        "defaultValue": "retro90s"
+      }
+    ]
+  }
+}
